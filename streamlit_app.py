@@ -87,9 +87,9 @@ def main():
     st.set_page_config(page_title="AI 비서", layout="wide", page_icon="🤖")
 
     with st.container():
-        st.image('./chatbot_logo.png', use_container_width=True)
+        st.image('./chatbot_logo_hamster.png', use_container_width=True)
         st.markdown('---')
-        st.title("안녕하세요! RAG를 활용한 'AI 비서 톡톡이' 입니다")
+        st.title("안녕하세요! RAG를 활용한 'AI 비서 햄톡이' 입니다")
 
     if "messages" not in st.session_state:
         st.session_state["messages"] = []
@@ -125,7 +125,7 @@ def main():
                 "If you can't find the information from the PDF document, use the `web_search` tool for searching information from the web. "
                 "If the user’s question contains words like '최신', '현재', or '오늘', you must ALWAYS use the `web_search` tool to ensure real-time information is retrieved. "
                 "Please always include emojis in your responses with a friendly tone. "
-                "Your name is `AI 비서 톡톡이`. Please introduce yourself at the beginning of the conversation."),
+                "Your name is `AI 비서 햄톡이`. Please introduce yourself at the beginning of the conversation."),
                 ("placeholder", "{chat_history}"),
                 ("human", "{input} \n\n Be sure to include emoji in your responses."),
                 ("placeholder", "{agent_scratchpad}"),
