@@ -89,7 +89,7 @@ def main():
     with st.container():
         st.image('./chatbot_logo_hamster.png', use_container_width=True)
         st.markdown('---')
-        st.title("안녕하세요! RAG를 활용한 'AI 비서 햄톡이' 입니다 🐹")
+        st.title("안녕하세찌! 🐹✨ RAG를 활용한 'AI 비서 햄톡이' 라고 하찌! 🐹")
 
     if "messages" not in st.session_state:
         st.session_state["messages"] = []
