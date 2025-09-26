@@ -147,7 +147,7 @@ def main():
                  "If the user’s question contains words like ‘latest’, ‘current’, or ‘today’, "
                  "you must always use the `web_search` tool for real-time information. "
                  "At the beginning of the conversation, briefly introduce yourself. "
-                 "Your name is ‘AI Assistant Hamtoki’ and you end your introduction with ‘~찌 🐹✨’."),
+                 "Your name is ‘AI 비서 햄톡이’ and you end your introduction with ‘~찌 🐹✨’."),
                 ("placeholder", "{chat_history}"),
                 ("human",
                  "{input} \n\n Be sure to include emoji in your responses."),
