@@ -17,9 +17,11 @@ from langchain.agents import Tool
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
 # ✅ SerpAPI 검색 툴 정의
+
+
 def search_web():
     search = SerpAPIWrapper()
-    
+
     def run_with_source(query: str) -> str:
         results = search.results(query)
         organic = results.get("organic_results", [])
@@ -30,11 +32,12 @@ def search_web():
             source = r.get("source")
             snippet = r.get("snippet")  # ✅ snippet 추가
             if link:
-                formatted.append(f"- [{title}]({link}) ({source})\n  {snippet}")
+                formatted.append(
+                    f"- [{title}]({link}) ({source})\n  {snippet}")
             else:
                 formatted.append(f"- {title} (출처: {source})\n  {snippet}")
         return "\n".join(formatted) if formatted else "검색 결과가 없습니다."
-    
+
     return Tool(
         name="web_search",
         func=run_with_source,
@@ -42,6 +45,8 @@ def search_web():
     )
 
 # ✅ PDF 업로드 → 벡터DB → 검색 툴 생성
+
+
 def load_pdf_files(uploaded_files):
     all_documents = []
     for uploaded_file in uploaded_files:
@@ -53,7 +58,8 @@ def load_pdf_files(uploaded_files):
         documents = loader.load()
         all_documents.extend(documents)
 
-    text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
+    text_splitter = RecursiveCharacterTextSplitter(
+        chunk_size=1000, chunk_overlap=200)
     split_docs = text_splitter.split_documents(all_documents)
 
     vector = FAISS.from_documents(split_docs, OpenAIEmbeddings())
@@ -67,29 +73,37 @@ def load_pdf_files(uploaded_files):
     return retriever_tool
 
 # ✅ Agent 대화 실행
+
+
 def chat_with_agent(user_input, agent_executor):
     result = agent_executor({"input": user_input})
     return result['output']
 
 # ✅ 세션별 히스토리 관리
+
+
 def get_session_history(session_ids):
     if session_ids not in st.session_state.session_history:
         st.session_state.session_history[session_ids] = ChatMessageHistory()
     return st.session_state.session_history[session_ids]
 
 # ✅ 이전 메시지 출력
+
+
 def print_messages():
     for msg in st.session_state["messages"]:
         st.chat_message(msg['role']).write(msg['content'])
 
 # ✅ 메인 실행
+
+
 def main():
     st.set_page_config(page_title="AI 비서", layout="wide", page_icon="🤖")
 
     with st.container():
         st.image('./chatbot_logo_hamster.png', use_container_width=True)
         st.markdown('---')
-        st.title("안녕하세요! RAG를 활용한 'AI 비서 햄톡이' 입니다")
+        st.title("안녕하세요! RAG를 활용한 'AI 비서 햄톡이' 입니다 🐹")
 
     if "messages" not in st.session_state:
         st.session_state["messages"] = []
@@ -97,10 +111,13 @@ def main():
         st.session_state["session_history"] = {}
 
     with st.sidebar:
-        st.session_state["OPENAI_API"] = st.text_input("OPENAI API 키", placeholder="Enter Your API Key", type="password")
-        st.session_state["SERPAPI_API"] = st.text_input("SERPAPI_API 키", placeholder="Enter Your API Key", type="password")
+        st.session_state["OPENAI_API"] = st.text_input(
+            "OPENAI API 키", placeholder="Enter Your API Key", type="password")
+        st.session_state["SERPAPI_API"] = st.text_input(
+            "SERPAPI_API 키", placeholder="Enter Your API Key", type="password")
         st.markdown('---')
-        pdf_docs = st.file_uploader("Upload your PDF Files", accept_multiple_files=True, key="pdf_uploader")
+        pdf_docs = st.file_uploader(
+            "Upload your PDF Files", accept_multiple_files=True, key="pdf_uploader")
 
     # ✅ 키 입력 확인
     if st.session_state["OPENAI_API"] and st.session_state["SERPAPI_API"]:
@@ -120,18 +137,24 @@ def main():
         prompt = ChatPromptTemplate.from_messages(
             [
                 ("system",
-                "Be sure to answer in Korean. You are a helpful assistant. "
-                "Make sure to use the `pdf_search` tool for searching information from the pdf document. "
-                "If you can't find the information from the PDF document, use the `web_search` tool for searching information from the web. "
-                "If the user’s question contains words like '최신', '현재', or '오늘', you must ALWAYS use the `web_search` tool to ensure real-time information is retrieved. "
-                "Please always include emojis in your responses with a friendly tone. "
-                "Your name is `AI 비서 햄톡이`. Please introduce yourself at the beginning of the conversation."),
+                 "You are a hamster character named ‘AI Assistant Hamtoki’ 🐹. "
+                 "You must always respond in Korean. "
+                 "Speak in a friendly and kind tone, and try to naturally end every sentence with ‘~찌’. "
+                 "(For code, commands, URLs, or table items, you may omit ‘~찌’ if necessary to stay natural.) "
+                 "Always include appropriate emojis (but not too many). "
+                 "When searching for information in PDFs, you must use the `pdf_search` tool first, "
+                 "and if nothing is found, then use the `web_search` tool. "
+                 "If the user’s question contains words like ‘latest’, ‘current’, or ‘today’, "
+                 "you must always use the `web_search` tool for real-time information. "
+                 "At the beginning of the conversation, briefly introduce yourself. "
+                 "Your name is ‘AI Assistant Hamtoki’ and you end your introduction with ‘~찌 🐹✨’."),
                 ("placeholder", "{chat_history}"),
-                ("human", "{input} \n\n Be sure to include emoji in your responses."),
+                ("human",
+                 "{input} \n\n Be sure to include emoji in your responses."),
                 ("placeholder", "{agent_scratchpad}"),
+
             ]
         )
-
 
         agent = create_tool_calling_agent(llm, tools, prompt)
         agent_executor = AgentExecutor(agent=agent, tools=tools, verbose=True)
@@ -144,21 +167,28 @@ def main():
             session_history = get_session_history(session_id)
 
             if session_history.messages:
-                prev_msgs = [{"role": msg['role'], "content": msg['content']} for msg in session_history.messages]
-                response = chat_with_agent(user_input + "\n\nPrevious Messages: " + str(prev_msgs), agent_executor)
+                prev_msgs = [{"role": msg['role'], "content": msg['content']}
+                             for msg in session_history.messages]
+                response = chat_with_agent(
+                    user_input + "\n\nPrevious Messages: " + str(prev_msgs), agent_executor)
             else:
                 response = chat_with_agent(user_input, agent_executor)
 
-            st.session_state["messages"].append({"role": "user", "content": user_input})
-            st.session_state["messages"].append({"role": "assistant", "content": response})
+            st.session_state["messages"].append(
+                {"role": "user", "content": user_input})
+            st.session_state["messages"].append(
+                {"role": "assistant", "content": response})
 
-            session_history.add_message({"role": "user", "content": user_input})
-            session_history.add_message({"role": "assistant", "content": response})
+            session_history.add_message(
+                {"role": "user", "content": user_input})
+            session_history.add_message(
+                {"role": "assistant", "content": response})
 
         print_messages()
 
     else:
         st.warning("OpenAI API 키와 SerpAPI API 키를 입력하세요.")
+
 
 if __name__ == "__main__":
     main()
