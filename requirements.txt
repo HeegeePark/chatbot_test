@@ -5,3 +5,4 @@ langchain_openai
 langchain 
 langchain-community 
 faiss--cpu
+pytube>=15.0.0

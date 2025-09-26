@@ -12,9 +12,191 @@ import tempfile
 from langchain.agents import create_tool_calling_agent, AgentExecutor
 from langchain_community.utilities import SerpAPIWrapper
 from langchain.agents import Tool
+from typing import List
+from langchain_community.document_loaders import WebBaseLoader, YoutubeLoader, CSVLoader
+from langchain.retrievers.document_compressors import LLMChainExtractor
+from langchain.retrievers import ContextualCompressionRetriever
+# fallback용
+from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptFound, CouldNotRetrieveTranscript
+import yt_dlp
+import tempfile, os
 
 # .env 파일 로드
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
+
+# 공통: 문서 → 벡터DB → (선택) 압축 리트리버
+def _build_retriever_from_documents(documents, chunk_size: int = 1000, chunk_overlap: int = 200, compress: bool = True):
+    splitter = RecursiveCharacterTextSplitter(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+    splits = splitter.split_documents(documents)
+    vector = FAISS.from_documents(splits, OpenAIEmbeddings())
+    base = vector.as_retriever(search_kwargs={"k": 6})
+
+    if not compress:
+        return base
+
+    # 쿼리 관련 핵심만 추출하는 압축 리트리버
+    llm_for_compress = ChatOpenAI(model_name="gpt-4o-mini", temperature=0)
+    compressor = LLMChainExtractor.from_llm(llm_for_compress)
+    return ContextualCompressionRetriever(base_compressor=compressor, base_retriever=base)
+
+# 웹페이지 RAG 툴
+def create_website_rag_tool(urls: List[str]):
+    urls = [u.strip() for u in urls if u and u.strip()]
+    if not urls:
+        return None
+    loader = WebBaseLoader(urls)
+    docs = loader.load()
+    retriever = _build_retriever_from_documents(docs, compress=True)
+    return create_retriever_tool(
+        retriever,
+        name="website_search",
+        description="RAG over provided web pages. 공식 문서/블로그/위키 등 URL 근거 기반 검색에 사용."
+    )
+
+# 유튜브 자막 RAG 툴
+def create_youtube_rag_tool(video_urls: list[str]):
+    video_urls = [u.strip() for u in (video_urls or []) if u and u.strip()]
+    if not video_urls:
+        return None
+
+    all_docs, errors = [], []
+
+    def _load_with_langchain(url: str):
+        loader = YoutubeLoader.from_youtube_url(
+            url,
+            add_video_info=True,
+            language=["ko", "en"],   # 우선 ko, 다음 en
+            translation="ko",        # 번역자막 허용
+        )
+        return loader.load()
+
+    def _load_with_transcript_api(url: str):
+        # youtube_transcript_api 직접 호출
+        vid = url.split("v=", 1)[1].split("&", 1)[0]
+        tr_list = YouTubeTranscriptApi.list_transcripts(vid)
+
+        # ko 우선 → en → en을 ko 번역
+        try:
+            tr = tr_list.find_transcript(["ko"])
+        except Exception:
+            tr = None
+        if not tr:
+            try:
+                tr = tr_list.find_transcript(["en"])
+            except Exception:
+                tr = None
+        fetched = None
+        if tr:
+            try:
+                fetched = tr.fetch()
+            except Exception:
+                fetched = None
+
+        if not fetched:
+            # en → ko 번역 시도
+            try:
+                tr = tr_list.find_transcript(["en"]).translate("ko")
+                fetched = tr.fetch()
+            except Exception:
+                fetched = None
+
+        if not fetched:
+            raise NoTranscriptFound(vid)
+
+        text = "\n".join([i["text"] for i in fetched if i.get("text")])
+        lang = (tr.language_code if hasattr(tr, "language_code") else "ko")
+        return [Document(page_content=text, metadata={"source": url, "language": lang, "loader": "youtube_transcript_api"})]
+
+    def _load_with_ytdlp(url: str):
+        # 자동생성/업로더 제공 자막 파일을 내려받아 파싱
+        with tempfile.TemporaryDirectory() as tmpdir:
+            ydl_opts = {
+                "skip_download": True,
+                "writesubtitles": True,
+                "writeautomaticsub": True,
+                "subtitleslangs": ["ko", "en"],
+                "outtmpl": os.path.join(tmpdir, "%(id)s.%(ext)s"),
+                "quiet": True,
+                "noprogress": True,
+            }
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=True)
+                vid = info["id"]
+
+            # ko 우선 → en
+            for lang in ["ko", "en"]:
+                vtt = os.path.join(tmpdir, f"{vid}.{lang}.vtt")
+                srt = os.path.join(tmpdir, f"{vid}.{lang}.srt")
+                path = vtt if os.path.exists(vtt) else (srt if os.path.exists(srt) else None)
+                if not path:
+                    continue
+                with open(path, "r", encoding="utf-8", errors="ignore") as f:
+                    content = f.read()
+                # 매우 단순한 VTT/SRT 텍스트 추출
+                lines = []
+                for line in content.splitlines():
+                    line = line.strip()
+                    if not line or line.startswith("WEBVTT") or "-->" in line or line.isdigit():
+                        continue
+                    lines.append(line)
+                text = "\n".join(lines)
+                return [Document(page_content=text, metadata={"source": url, "language": lang, "loader": "yt_dlp"})]
+
+        raise NoTranscriptFound(url)
+
+    docs = []
+    for url in video_urls:
+        try:
+            docs = _load_with_langchain(url)
+        except Exception as e1:
+            try:
+                docs = _load_with_transcript_api(url)
+            except Exception as e2:
+                try:
+                    docs = _load_with_ytdlp(url)
+                except Exception as e3:
+                    errors.append(f"{url} → {type(e3).__name__}: {e3}")
+                    docs = []
+
+        all_docs.extend(docs)
+
+    if not all_docs:
+        st.warning(
+            "YouTube 자막을 불러오지 못했찌. 아래 원인을 확인해줘찌:\n\n- " + "\n- ".join(errors) if errors
+            else "YouTube 자막이 없어 RAG에 사용할 문서를 만들 수 없었찌."
+        )
+        return None
+
+    # 벡터DB/리트리버 구성 (기존과 동일)
+    splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
+    splits = splitter.split_documents(all_docs)
+    vector = FAISS.from_documents(splits, OpenAIEmbeddings())
+    retriever = vector.as_retriever(search_kwargs={"k": 6})
+
+    return create_retriever_tool(
+        retriever,
+        name="youtube_search",
+        description="RAG over YouTube transcripts (ko/en). 링크된 영상의 자막을 근거로 답변합니다."
+    )
+
+
+# FAQ CSV RAG 툴
+def create_faq_csv_rag_tool(uploaded_csv_files):
+    if not uploaded_csv_files:
+        return None
+    docs = []
+    for f in uploaded_csv_files:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".csv") as tmp_file:
+            tmp_file.write(f.read())
+            path = tmp_file.name
+        loader = CSVLoader(file_path=path, encoding="utf-8")
+        docs.extend(loader.load())
+    retriever = _build_retriever_from_documents(docs, chunk_size=800, chunk_overlap=100, compress=True)
+    return create_retriever_tool(
+        retriever,
+        name="faq_search",
+        description="RAG over uploaded FAQ CSV (Q/A, category, product sheet 등)."
+    )
 
 # ✅ SerpAPI 검색 툴 정의
 def search_web():
@@ -108,6 +290,20 @@ def main():
             "Upload your PDF Files", accept_multiple_files=True, key="pdf_uploader"
         )
 
+        # 웹페이지 RAG URL들 (줄바꿈 구분)
+        urls_text = st.text_area("RAG 기반 웹페이지 URL", placeholder="https://docs.langchain.com\nhttps://openai.com/research",help="특정 제품 문서/블로그/위키를 벡터화해서 “출처 기반” 답변을 줘서 신뢰도가 높아지찌.")
+        st.session_state["website_urls"] = [u.strip() for u in urls_text.splitlines() if u.strip()]
+
+        # 유튜브 RAG URL들 (줄바꿈 구분)
+        yt_text = st.text_area("RAG 기반 YouTube URL", placeholder="https://www.youtube.com/watch?v=XXXXXXXX", help="긴 영상도 자막을 조각 내서 질문에 맞는 부분만 찾아 요약해주니, 교육/리뷰/강의에 특히 쓸모 있찌.")
+        st.session_state["youtube_urls"] = [u.strip() for u in yt_text.splitlines() if u.strip()]
+
+        # FAQ CSV 업로드
+        faq_csvs = st.file_uploader("FAQ CSV 업로드", type=["csv"], accept_multiple_files=True, key="faq_csv_uploader", help="내부 FAQ/고객응대 CSV를 바로 RAG에 얹어 실무 챗봇화하기 딱 좋찌.")
+        st.session_state["faq_csvs"] = faq_csvs
+
+        
+
     # ✅ 키 입력 확인
     if st.session_state["OPENAI_API"] and st.session_state["SERPAPI_API"]:
         os.environ['OPENAI_API_KEY'] = st.session_state["OPENAI_API"]
@@ -118,7 +314,23 @@ def main():
         if pdf_docs:
             pdf_search = load_pdf_files(pdf_docs)
             tools.append(pdf_search)
+        
+        # 👉 새 RAG 툴들 추가
+        website_tool = create_website_rag_tool(st.session_state.get("website_urls", []))
+        if website_tool:
+            tools.append(website_tool)
+
+        youtube_tool = create_youtube_rag_tool(st.session_state.get("youtube_urls", []))
+        if youtube_tool:
+            tools.append(youtube_tool)
+
+        faq_tool = create_faq_csv_rag_tool(st.session_state.get("faq_csvs", None))
+        if faq_tool:
+            tools.append(faq_tool)
+
+        # 기존 웹 검색 툴
         tools.append(search_web())
+
 
         # LLM 설정
         llm = ChatOpenAI(model_name="gpt-4o-mini", temperature=0)
@@ -150,6 +362,7 @@ def main():
                     "- User: '무엇을 도와줄 수 있어?' → Assistant: '무엇을 도와드릴까찌? 😊'\n"
                     "- User: '소개해줘' → Assistant: '저는 AI 비서 햄톡이찌! 궁금한 걸 편하게 물어봐주세찌! ✨'\n"
                     "- User: '코드 보여줘' → Assistant: '설명을 드린 뒤 코드 블록은 그대로 보여주겠찌:'"
+                    "... When the user references a YouTube link or asks about a video, use the `youtube_search` tool to ground your answer. ..."
                 ),
                 ("placeholder", "{chat_history}"),
                 ("human", "{input}\n\nPlease follow the STYLE RULES above. Include emojis sparingly."),
