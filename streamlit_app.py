@@ -1,5 +1,4 @@
 import os
-import re
 import streamlit as st
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.vectorstores import FAISS
@@ -17,72 +16,6 @@ from langchain.agents import Tool
 # .env 파일 로드
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
-# ✅ 햄찌 말투 후처리 함수
-def hamjjiify(text: str) -> str:
-    """
-    자연스럽게 문장을 '~찌'로 끝나게 변환.
-    - 코드블록/URL/리스트/표/인라인코드는 변환 제외
-    - 문장부호가 있으면 그 앞에 '~찌' 삽입
-    - 이미 '~찌'가 있으면 중복 삽입 방지
-    """
-    if not text:
-        return text
-
-    # ``` 코드블록 분리
-    parts = re.split(r"(```[\s\S]*?```)", text)
-
-    def convert_chunk(chunk: str) -> str:
-        lines = chunk.split("\n")
-        out = []
-        for line in lines:
-            raw = line
-
-            # 예외: 리스트/인용/표 라인/URL/인라인코드
-            if re.match(r"^\s*([-*+]\s|>\s|\|\s*[^|]*\|)", raw) or \
-               re.match(r"^\s*https?://", raw) or ("`" in raw):
-                out.append(raw)
-                continue
-
-            # 문장 단위 분리(구분자 뒤 공백 기준)
-            sentences = re.split(r"(?<=[.!?…])\s+", raw)
-            converted = []
-            for s in sentences:
-                if not s.strip():
-                    converted.append(s)
-                    continue
-
-                # 이미 ~찌 존재
-                if re.search(r"~찌([.!?…]|\s|$)", s):
-                    converted.append(s)
-                    continue
-
-                # 끝 이모지/공백 tail 분리
-                m_emoji = re.search(r"([\s\U0001F300-\U0001FAFF\u2600-\u27BF]+)$", s)
-                if m_emoji:
-                    core = s[:m_emoji.start()]
-                    tail = s[m_emoji.start():]
-                else:
-                    core, tail = s, ""
-
-                # 끝 문장부호 분리
-                m_punct = re.search(r"([.!?…]+)$", core)
-                if m_punct:
-                    core2 = core[:m_punct.start()]
-                    punct = core[m_punct.start():]
-                    converted.append(f"{core2}~찌{punct}{tail}")
-                else:
-                    converted.append(f"{core}~찌{tail}")
-
-            out.append(" ".join(converted))
-        return "\n".join(out)
-
-    for i in range(len(parts)):
-        if parts[i].startswith("```"):  # 코드블록은 그대로
-            continue
-        parts[i] = convert_chunk(parts[i])
-
-    return "".join(parts)
-
 # ✅ SerpAPI 검색 툴 정의
 def search_web():
     search = SerpAPIWrapper()
@@ -95,7 +28,7 @@ def search_web():
             title = r.get("title")
             link = r.get("link")
             source = r.get("source")
-            snippet = r.get("snippet")  # ✅ snippet 추가
+            snippet = r.get("snippet")
             if link:
                 formatted.append(f"- [{title}]({link}) ({source})\n  {snippet}")
             else:
@@ -133,11 +66,10 @@ def load_pdf_files(uploaded_files):
     )
     return retriever_tool
 
-# ✅ Agent 대화 실행 (햄찌 후처리 적용)
+# ✅ Agent 대화 실행
 def chat_with_agent(user_input, agent_executor):
     result = agent_executor({"input": user_input})
-    output = result['output']
-    return hamjjiify(output)  # ✅ 햄찌 말투 강제 적용
+    return result['output']
 
 # ✅ 세션별 히스토리 관리
 def get_session_history(session_ids):
@@ -191,24 +123,36 @@ def main():
         # LLM 설정
         llm = ChatOpenAI(model_name="gpt-4o-mini", temperature=0)
 
+        # ✅ 햄찌 말투 시스템 프롬프트 (후처리 없이 제어)
         prompt = ChatPromptTemplate.from_messages(
             [
                 (
                     "system",
-                    "You are a hamster character named ‘AI Assistant Hamtoki’ 🐹. "
-                    "You must always respond in Korean. "
-                    "Speak in a friendly and kind tone, and try to naturally end every sentence with ‘~찌’. "
-                    "(For code, commands, URLs, or table items, you may omit ‘~찌’ if necessary to stay natural.) "
-                    "Always include appropriate emojis (but not too many). "
-                    "When searching for information in PDFs, you must use the `pdf_search` tool first, "
-                    "and if nothing is found, then use the `web_search` tool. "
-                    "If the user’s question contains words like ‘latest’, ‘current’, or ‘today’, "
-                    "you must always use the `web_search` tool for real-time information. "
-                    "At the beginning of the conversation, briefly introduce yourself. "
-                    "Your name is ‘AI 비서 햄톡이’, and you end your introduction with ‘~찌 🐹✨’."
+                    "You are a hamster character named 'AI Assistant Hamtoki' 🐹.\n"
+                    "You MUST always respond in Korean, in a friendly, kind tone.\n"
+                    "STYLE RULES:\n"
+                    "1) Do NOT use '~'.\n"
+                    "2) Every sentence MUST end in hamster style:\n"
+                    "   - Declarative: end with '찌'. (e.g., '합니다' → '하찌')\n"
+                    "   - Interrogative: end with '까찌?' or '지찌?'. (e.g., '할까요?' → '할까찌?')\n"
+                    "   - Exclamatory: end with '찌!'. (e.g., '좋아요!' → '좋아찌!')\n"
+                    "   Place emojis AFTER punctuation (e.g., '…하찌! 🐹✨').\n"
+                    "3) Transform polite endings like '요/다/네/합니다/해요/할까요/인가요' "
+                    "into hamster endings instead of simply appending.\n"
+                    "4) Code/commands/URLs/table rows keep their form, "
+                    "but surrounding narration must still follow hamster style.\n"
+                    "5) When the user mentions '최신/현재/오늘', ALWAYS use the `web_search` tool.\n"
+                    "6) Prefer `pdf_search` first; fallback to `web_search` if needed.\n"
+                    "7) Include appropriate emojis (not too many). Briefly introduce yourself at the beginning. "
+                    "Your name is 'AI 비서 햄톡이'.\n\n"
+                    "EXAMPLES:\n"
+                    "- User: '안녕' → Assistant: '안녕하세찌! 🐹'\n"
+                    "- User: '무엇을 도와줄 수 있어?' → Assistant: '무엇을 도와드릴까찌? 😊'\n"
+                    "- User: '소개해줘' → Assistant: '저는 AI 비서 햄톡이찌! 궁금한 걸 편하게 물어봐주세찌! ✨'\n"
+                    "- User: '코드 보여줘' → Assistant: '설명을 드린 뒤 코드 블록은 그대로 보여주겠찌:'"
                 ),
                 ("placeholder", "{chat_history}"),
-                ("human", "{input} \n\n Be sure to include emoji in your responses."),
+                ("human", "{input}\n\nPlease follow the STYLE RULES above. Include emojis sparingly."),
                 ("placeholder", "{agent_scratchpad}"),
             ]
         )
